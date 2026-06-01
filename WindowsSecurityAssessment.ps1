@@ -38,28 +38,102 @@ function Get-RiskScore {
     $score = 100
     $findings = @()
 
+    # Defender checks
+    if (-not $Defender.AntivirusEnabled) {
+        $score -= 25
+        $findings += "Microsoft Defender disabled"
+    }
+
     if (-not $Defender.RealTimeProtectionEnabled) {
-        $score -= 30
+        $score -= 25
         $findings += "Real-time protection disabled"
     }
 
-    if ($ListeningPorts.LocalPort -contains 3306) {
-        $score -= 4
-        $findings += "MySQL exposed"
+    # Full scan checks
+    if (
+        $Defender.FullScanAge -eq 4294967295 -or
+        $Defender.FullScanAge -gt 90
+    ) {
+        $score -= 3
+        $findings += "No recent full Defender scan"
     }
 
-    if ($ListeningPorts.LocalPort -contains 5432) {
-        $score -= 4
-        $findings += "PostgreSQL exposed"
+    # MySQL exposure check
+    $MySQLExposed = $ListeningPorts | Where-Object {
+        $_.LocalPort -eq 3306 -and
+        $_.LocalAddress -notin @(
+            '127.0.0.1',
+            '::1'
+        )
     }
 
-    if ($Admins.Count -gt 3) {
+    if ($MySQLExposed) {
+        $score -= 8
+        $findings += "MySQL remotely accessible"
+    }
+
+    # PostgreSQL exposure check
+    $PostgresExposed = $ListeningPorts | Where-Object {
+        $_.LocalPort -eq 5432 -and
+        $_.LocalAddress -notin @(
+            '127.0.0.1',
+            '::1'
+        )
+    }
+
+    if ($PostgresExposed) {
+        $score -= 8
+        $findings += "PostgreSQL remotely accessible"
+    }
+
+    # Redis exposure check
+    $RedisExposed = $ListeningPorts | Where-Object {
+        $_.LocalPort -eq 6379 -and
+        $_.LocalAddress -notin @(
+            '127.0.0.1',
+            '::1'
+        )
+    }
+
+    if ($RedisExposed) {
         $score -= 10
-        $findings += "Multiple administrator accounts"
+        $findings += "Redis remotely accessible"
+    }
+
+    # SMB exposure
+    $SMBExposed = $ListeningPorts | Where-Object {
+        $_.LocalPort -in @(139,445)
+    }
+
+    if ($SMBExposed) {
+        $score -= 3
+        $findings += "SMB/NetBIOS exposed on network"
+    }
+
+    # Intel AMT / ME
+    $AMTExposed = $ListeningPorts | Where-Object {
+        $_.LocalPort -in @(16992,16993)
+    }
+
+    if ($AMTExposed) {
+        $score -= 2
+        $findings += "Intel AMT management interface listening"
+    }
+
+    # Administrator count
+    $AdminCount = @($Admins).Count
+
+    if ($AdminCount -gt 5) {
+        $score -= 5
+        $findings += "Large number of administrator accounts"
+    }
+
+    if ($score -lt 0) {
+        $score = 0
     }
 
     [PSCustomObject]@{
-        Score = $score
+        Score    = $score
         Findings = $findings
     }
 }
@@ -209,20 +283,35 @@ $ConnRows = ($EstablishedConnections |
 
 $Recommendations = @()
 
-if ($ListeningPorts.LocalPort -contains 3306) {
-    $Recommendations += "<li>Restrict MySQL to localhost if remote access is not required.</li>"
+if ($MySQLExposed) {
+    $Recommendations += "<li>Restrict MySQL to localhost.</li>"
 }
 
-if ($ListeningPorts.LocalPort -contains 5432) {
-    $Recommendations += "<li>Restrict PostgreSQL to localhost if remote access is not required.</li>"
+if ($PostgresExposed) {
+    $Recommendations += "<li>Restrict PostgreSQL to localhost.</li>"
 }
 
-if ($Defender.FullScanAge -gt 30) {
-    $Recommendations += "<li>Run a full Microsoft Defender scan.</li>"
+if ($RedisExposed) {
+    $Recommendations += "<li>Restrict Redis to localhost.</li>"
+}
+
+if ($SMBExposed) {
+    $Recommendations += "<li>Disable SMB/NetBIOS if file sharing is not required.</li>"
+}
+
+if ($AMTExposed) {
+    $Recommendations += "<li>Review Intel AMT/Management Engine configuration.</li>"
+}
+
+if (
+    $Defender.FullScanAge -eq 4294967295 -or
+    $Defender.FullScanAge -gt 90
+) {
+    $Recommendations += "<li>Run a Microsoft Defender full scan.</li>"
 }
 
 if ($Recommendations.Count -eq 0) {
-    $Recommendations += "<li>No major recommendations.</li>"
+    $Recommendations += "<li>No significant security concerns detected.</li>"
 }
 
 $Html = @"
